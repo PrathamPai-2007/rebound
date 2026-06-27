@@ -14,15 +14,38 @@ trade hitting TP = +reward_risk R. MFE/MAE are the best/worst excursions in R.
 """
 from __future__ import annotations
 import csv
+import json
 import logging
 import os
+import threading
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
 from config import cfg
 
 logger = logging.getLogger(__name__)
+
+
+def _notify(msg: str) -> None:
+    token = cfg.TELEGRAM_TOKEN
+    chat_id = cfg.TELEGRAM_CHAT_ID
+    if not token or not chat_id:
+        return
+
+    def _send() -> None:
+        try:
+            data = json.dumps({"chat_id": chat_id, "text": msg}).encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=data, headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 CSV_FIELDS = [
@@ -118,6 +141,7 @@ class TradeTracker:
             "[%s] PAPER %s open | entry=%.4f sl=%.4f tp=%.4f RR=%.2f",
             symbol, side, sig.entry_price, sig.sl_price, sig.tp_price, rr,
         )
+        _notify(f"[{symbol} {side.upper()}] paper open\nentry={sig.entry_price:.2f}  sl={sig.sl_price:.2f}  tp={sig.tp_price:.2f}  RR={rr:.2f}")
 
     def on_tick(self, symbol: str, price: float, ts_ms: float) -> None:
         """Advance/resolve the open paper trade for this symbol on a new price."""
@@ -170,6 +194,7 @@ class TradeTracker:
             "[%s] PAPER %s %+.2fR dur=%.0fs (%s)",
             vt.symbol, "WIN" if pnl_r >= 0 else "LOSS", pnl_r, duration, outcome,
         )
+        _notify(f"[{vt.symbol} {vt.side.upper()}] paper {'WIN' if pnl_r >= 0 else 'LOSS'} {pnl_r:+.2f}R ({outcome})\nentry={vt.entry:.2f} → exit={exit_price:.2f}  dur={duration/60:.0f}m")
         del self._open[vt.symbol]
         self._paper_cooldown[vt.symbol] = time.monotonic() + cfg.PAPER_COOLDOWN_SEC
 
@@ -211,6 +236,7 @@ class TradeTracker:
             "[%s] LIVE close | pnl=%.4f (%+.2fR) outcome=%s",
             trade.symbol, realised_pnl or 0.0, pnl_r, outcome,
         )
+        _notify(f"[{trade.symbol} {trade.side.upper()}] live {outcome} {pnl_r:+.2f}R")
 
     # ------------------------------------------------------------------
     # Summary helpers

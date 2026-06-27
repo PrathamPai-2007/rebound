@@ -21,7 +21,7 @@ Looks for price stretched beyond its volume-weighted mean and bets on the snap b
 ## Risk Management
 
 - **Sizing** — risk-based integer contracts: `(equity × RISK_PER_TRADE_PCT / 100) / |entry − sl| / contract_value`, rounded to nearest integer, minimum 1. Rejected if required margin exceeds available equity.
-- **Cooldown** — 120 seconds after any position closes on a symbol; at most one signal per closed candle.
+- **Cooldown** — disabled by default (0s); at most one signal per closed candle. Re-enable with `COOLDOWN_SEC=120 python bot.py`.
 - **Equity guard** — if drawdown from initial equity exceeds `MAX_EQUITY_DRAWDOWN_PCT`, all positions are market-closed immediately.
 - **Leverage** — 50× for crypto, 30× for commodities (configurable via env vars).
 
@@ -156,9 +156,47 @@ python optimize.py --symbols BTCUSD --min-trades 50
 python optimize.py --symbols BTCUSD,SOLUSD,XAUTUSD,BNBUSD,LTCUSD --min-trades 50
 ```
 
-Searches 60 combinations per symbol: 4 RSI pairs × 5 VWAP band widths × 3 wick ratios. Results are ranked by expectancy (R/trade). Once best params are identified, write them to `config/{DELTASYM}.json`.
+Searches 27 combinations per symbol: 3 RSI pairs `[(30,70),(35,65),(40,60)]` × 3 VWAP band SDs `[1.00,1.25,1.50]` × 3 wick ratios `[0.0,0.5,1.0]`. Results are ranked by expectancy (R/trade). Once best params are identified, write them to `config/{DELTASYM}.json`.
+
+`wick_ratio=0.0` disables the wick size check — only the directional close (close in upper/lower half of candle range) remains active.
 
 The binding gate is the one with the lowest pass count in the summary log — loosen that threshold first when the signal frequency is too low.
+
+---
+
+## Time-Based Filter
+
+Signals are suppressed during hours where mean-reversion edge is negative (India open, London→NY handoff, US open):
+
+```bash
+# Default: block hours 4, 11, 15 UTC (09:30, 16:30, 20:30 IST)
+python bot.py
+
+# Override
+BLOCKED_HOURS_UTC=4,11,15,16 python bot.py
+
+# Disable entirely
+BLOCKED_HOURS_UTC= python bot.py
+```
+
+The check uses the tick's own timestamp so the backtester respects it identically.
+
+---
+
+## Telegram Notifications
+
+Get trade alerts (paper open/close, live close) on your phone without SSH-ing in.
+
+1. Message **@BotFather** on Telegram → `/newbot` → copy the token
+2. Message your bot once, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` → find `"chat":{"id":XXXXXXX}`
+3. Add to `.env`:
+
+```
+TELEGRAM_TOKEN=<token>
+TELEGRAM_CHAT_ID=<chat id>
+```
+
+No-op if either var is unset.
 
 ---
 

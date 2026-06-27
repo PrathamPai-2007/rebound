@@ -117,10 +117,27 @@ Global defaults in `config.py` as `cfg.*`, sourced from env vars. Per-symbol JSO
 | `SUMMARY_INTERVAL` | `SUMMARY_INTERVAL_SEC` | 300s | How often the summary log line fires |
 | `LEVERAGE` (crypto) | `CRYPTO_LEVERAGE` | 50 | Leverage for BTC/SOL/BNB/LTC |
 | `LEVERAGE` (commodity) | `COMMODITY_LEVERAGE` | 30 | Leverage for XAUT |
+| `BLOCKED_HOURS_UTC` | `BLOCKED_HOURS_UTC` | `4,11,15` | Comma-separated UTC hours where signals are suppressed (market opens where mean-reversion edge flips negative: India open, London→NY handoff, US open) |
 
 ## Cooldown mechanism
 
-After any position closes (detected by `size == 0` in the `positions` WS message), `SymbolEngine.enter_cooldown()` blocks signals for that symbol. `RiskManager._schedule_cooldown_exit()` clears it after `COOLDOWN_SEC` (default 120s). Paper trades use a separate `PAPER_COOLDOWN_SEC` (default 120s) inside `TradeTracker`.
+After any position closes (detected by `size == 0` in the `positions` WS message), `SymbolEngine.enter_cooldown()` blocks signals for that symbol. `RiskManager._schedule_cooldown_exit()` clears it after `COOLDOWN_SEC` (default **0s** — effectively disabled). Paper trades use a separate `PAPER_COOLDOWN_SEC` (default **0s**) inside `TradeTracker`. Set either to a non-zero value via env var to re-enable.
+
+## Time-based trading filter
+
+`SymbolEngine.on_tick()` checks `int(tick.timestamp // 3_600_000) % 24` against `cfg.BLOCKED_HOURS_UTC` and returns `None` immediately for blocked hours. Uses the tick's own timestamp (not wall clock) so the backtester respects it too. Default blocked hours: 4, 11, 15 UTC (09:30, 16:30, 20:30 IST) — the three hours where backtest expectancy was negative.
+
+Override: `BLOCKED_HOURS_UTC=4,11,15,16 python bot.py` or clear with `BLOCKED_HOURS_UTC= python bot.py`.
+
+## Telegram notifications
+
+`core/trade_tracker.py` sends a Telegram message on paper trade open, paper trade close, and live trade close via `_notify()` — a module-level function using `urllib.request` (stdlib, no new dependency). No-op if `TELEGRAM_TOKEN` or `TELEGRAM_CHAT_ID` env vars are not set.
+
+Add to `.env`:
+```
+TELEGRAM_TOKEN=<bot token from @BotFather>
+TELEGRAM_CHAT_ID=<your chat id from getUpdates>
+```
 
 ## Adding a new symbol
 
@@ -186,7 +203,9 @@ python optimize.py --symbols BTCUSD,LTCUSD --resolution 5m
 python optimize.py --min-trades 50              # raise minimum trade count filter (default 15)
 ```
 
-Grid searched: RSI pairs `[(25,75),(30,70),(35,65),(40,60)]` × VWAP band SDs `[1.25,1.50,1.75,2.00,2.25]` × wick ratios `[1.0,1.5,2.0]` = **60 combos per symbol**. Each combo spawns `backtest.py` as a subprocess with env-var overrides, reads the output CSV via `stats_from_csv()`. After choosing best params, update the symbol's `config/{DELTASYM}.json`.
+Grid searched: RSI pairs `[(30,70),(35,65),(40,60)]` × VWAP band SDs `[1.00,1.25,1.50]` × wick ratios `[0.0,0.5,1.0]` = **27 combos per symbol**. Each combo spawns `backtest.py` as a subprocess with env-var overrides, reads the output CSV via `stats_from_csv()`. Workers default to `cpu_count() // 2`. After choosing best params, update the symbol's `config/{DELTASYM}.json`.
+
+Note on `wick_ratio=0.0`: the wick size check (`lower_wick >= ratio * body`) becomes `>= 0`, always true — only the directional close check (close in upper/lower half of candle range) remains active.
 
 ## Smoke test
 

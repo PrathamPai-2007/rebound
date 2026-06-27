@@ -101,9 +101,9 @@ def main() -> None:
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
     # Grid: linked RSI pairs, VWAP band multiplier, wick ratio
-    rsi_pairs   = [(25, 75), (30, 70), (35, 65), (40, 60)]
-    band_sds    = [1.25, 1.50, 1.75, 2.00, 2.25]
-    wick_ratios = [1.0, 1.5, 2.0]
+    rsi_pairs   = [(30, 70), (35, 65), (40, 60)]
+    band_sds    = [1.00, 1.25, 1.50]
+    wick_ratios = [0.0, 0.5, 1.0]
 
     combos = list(itertools.product(rsi_pairs, band_sds, wick_ratios))
     total = len(combos) * len(symbols)
@@ -127,7 +127,7 @@ def main() -> None:
             }
             return params, run_one(symbol, params, args.resolution, args.data_dir)
 
-        workers = min(len(combos), os.cpu_count() or 4)
+        workers = (os.cpu_count() or 4) // 2
         print(f"  Running {len(combos)} combos with {workers} parallel workers...")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             results: list[tuple[dict, dict]] = list(pool.map(_job, combos))

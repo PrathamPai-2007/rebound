@@ -18,6 +18,8 @@ class Config:
     # Credentials
     API_KEY: str = os.environ.get("DELTA_API_KEY", "")
     API_SECRET: str = os.environ.get("DELTA_API_SECRET", "")
+    TELEGRAM_TOKEN: str = os.environ.get("TELEGRAM_TOKEN", "")
+    TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 
     # Transport
     USE_TESTNET: bool = os.environ.get("USE_TESTNET", "false").lower() == "true"
@@ -72,6 +74,11 @@ class Config:
     BRACKET_SLIPPAGE_TICKS: int = int(os.environ.get("BRACKET_SLIPPAGE_TICKS", 5))
     BRACKET_TRIGGER_METHOD: str = "last_traded_price"
 
+    # UTC hours to block trading (major market opens where mean-reversion edge flips negative)
+    BLOCKED_HOURS_UTC: frozenset = frozenset(
+        int(h) for h in os.environ.get("BLOCKED_HOURS_UTC", "4,11,15").split(",") if h.strip()
+    )
+
     # WebSocket resilience
     WS_RECONNECT_BASE_DELAY: float = 1.0
     WS_RECONNECT_MAX_DELAY: float = 60.0
@@ -85,8 +92,8 @@ class Config:
     # Outcome tracking / instrumentation
     TRADES_CSV: str = os.environ.get("TRADES_CSV", "trades.csv")
     SUMMARY_INTERVAL: float = float(os.environ.get("SUMMARY_INTERVAL_SEC", 300))
-    COOLDOWN_SEC: float = float(os.environ.get("COOLDOWN_SEC", 120.0))
-    PAPER_COOLDOWN_SEC: float = float(os.environ.get("PAPER_COOLDOWN_SEC", 120.0))
+    COOLDOWN_SEC: float = float(os.environ.get("COOLDOWN_SEC", 0.0))
+    PAPER_COOLDOWN_SEC: float = float(os.environ.get("PAPER_COOLDOWN_SEC", 0.0))
     PAPER_EQUITY: float = float(os.environ.get("PAPER_EQUITY", 10000.0))
 
     # Populated by _load_symbol_configs() at module load time

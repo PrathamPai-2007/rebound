@@ -82,6 +82,8 @@ class SymbolEngine:
     def on_tick(self, tick: Tick) -> SignalResult | None:
         if self._in_cooldown:
             return None
+        if int(tick.timestamp // 3_600_000) % 24 in cfg.BLOCKED_HOURS_UTC:
+            return None
 
         vwap_result = self._vwap.update(tick)
         closed_candle = self._candles.feed(tick)
