@@ -16,6 +16,9 @@ build/
 venv/
 env/
 
+# Per-symbol tuned configs (contain strategy secrets)
+config/*.json
+
 # Historical data
 data/
 

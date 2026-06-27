@@ -36,9 +36,15 @@ class SymbolEngine:
 
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol
-        self._vwap = VWAPIndicator(window=cfg.VWAP_WINDOW)
-        self._rsi = RSIIndicator(period=cfg.RSI_PERIOD)
-        self._candles = CandleBuffer()
+        self._rsi_oversold: float = cfg.for_symbol(symbol, 'RSI_OVERSOLD')
+        self._rsi_overbought: float = cfg.for_symbol(symbol, 'RSI_OVERBOUGHT')
+        self._sl_ticks: int = cfg.for_symbol(symbol, 'SL_TICKS')
+        self._vwap = VWAPIndicator(
+            window=cfg.for_symbol(symbol, 'VWAP_WINDOW'),
+            band_sd=cfg.for_symbol(symbol, 'VWAP_BAND_SD'),
+        )
+        self._rsi = RSIIndicator(period=cfg.for_symbol(symbol, 'RSI_PERIOD'))
+        self._candles = CandleBuffer(wick_ratio=cfg.for_symbol(symbol, 'WICK_RATIO'))
         self._in_cooldown: bool = False   # standdown after SL hit
         self._tick_size: float | None = None  # set externally after market info fetch
         self._contract_value: float = 1.0  # coin per contract, set after market info fetch
@@ -90,10 +96,10 @@ class SymbolEngine:
 
         # Evaluate the three entry gates as named booleans for each direction.
         long_band = closed_candle.close <= vwap_result.lower2
-        long_rsi = rsi_val < cfg.RSI_OVERSOLD
+        long_rsi = rsi_val < self._rsi_oversold
         long_wick = self._candles.has_bullish_wick_rejection()
         short_band = closed_candle.close >= vwap_result.upper2
-        short_rsi = rsi_val > cfg.RSI_OVERBOUGHT
+        short_rsi = rsi_val > self._rsi_overbought
         short_wick = self._candles.has_bearish_wick_rejection()
 
         # Gate stats
@@ -113,7 +119,7 @@ class SymbolEngine:
             )
 
         tick_size = self.tick_size
-        sl_offset = cfg.SL_TICKS * tick_size
+        sl_offset = self._sl_ticks * tick_size
 
         if long_band and long_rsi and long_wick:
             entry = closed_candle.close

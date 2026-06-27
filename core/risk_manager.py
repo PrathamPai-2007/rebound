@@ -65,7 +65,7 @@ class RiskManager:
 
     def _calc_size(self, symbol: str, equity: float, entry: float, sl: float) -> int:
         """Risk-based sizing in integer contracts, with a margin sanity check."""
-        risk_usd = equity * (cfg.RISK_PER_TRADE_PCT / 100.0)
+        risk_usd = equity * (cfg.for_symbol(symbol, 'RISK_PER_TRADE_PCT') / 100.0)
         sl_distance = abs(entry - sl)
         if sl_distance == 0:
             return 0

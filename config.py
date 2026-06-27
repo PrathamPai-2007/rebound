@@ -1,7 +1,17 @@
+import json
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+_SYMBOL_CONFIG_KEYS = frozenset({
+    'RSI_PERIOD', 'RSI_OVERSOLD', 'RSI_OVERBOUGHT',
+    'VWAP_WINDOW', 'VWAP_BAND_SD', 'WICK_RATIO',
+    'SL_TICKS', 'RISK_PER_TRADE_PCT',
+})
 
 
 class Config:
@@ -18,30 +28,29 @@ class Config:
 
     # Internal symbol → Delta Exchange India symbol (all use USD, not USDT)
     # XAU/USDT → XAUTUSD (Tether Gold perp, closest gold equivalent on Delta India)
-    # XAG/USDT and CL/USDT don't exist on Delta India — replaced with ETH and BNB
     SYMBOL_MAP: dict[str, str] = {
         "BTC/USDT":  "BTCUSD",
         "SOL/USDT":  "SOLUSD",
-        "ETH/USDT":  "ETHUSD",
         "XAUT/USDT": "XAUTUSD",
         "BNB/USDT":  "BNBUSD",
+        "LTC/USDT":  "LTCUSD",
     }
     _reverse_symbol_map: dict[str, str] = {
         "BTCUSD":  "BTC/USDT",
         "SOLUSD":  "SOL/USDT",
-        "ETHUSD":  "ETH/USDT",
         "XAUTUSD": "XAUT/USDT",
         "BNBUSD":  "BNB/USDT",
+        "LTCUSD":  "LTC/USDT",
     }
 
     # Assets and their leverage
-    SYMBOLS: list[str] = ["BTC/USDT", "SOL/USDT", "ETH/USDT", "XAUT/USDT", "BNB/USDT"]
+    SYMBOLS: list[str] = ["BTC/USDT", "SOL/USDT", "XAUT/USDT", "BNB/USDT", "LTC/USDT"]
     LEVERAGE: dict[str, int] = {
         "BTC/USDT":  int(os.environ.get("CRYPTO_LEVERAGE", 50)),
         "SOL/USDT":  int(os.environ.get("CRYPTO_LEVERAGE", 50)),
-        "ETH/USDT":  int(os.environ.get("CRYPTO_LEVERAGE", 50)),
         "XAUT/USDT": int(os.environ.get("COMMODITY_LEVERAGE", 30)),
         "BNB/USDT":  int(os.environ.get("CRYPTO_LEVERAGE", 50)),
+        "LTC/USDT":  int(os.environ.get("CRYPTO_LEVERAGE", 50)),
     }
 
     # Strategy
@@ -56,7 +65,7 @@ class Config:
     # Order / risk
     RISK_PER_TRADE_PCT: float = float(os.environ.get("RISK_PER_TRADE_PCT", 1.0))
     MAX_EQUITY_DRAWDOWN_PCT: float = float(os.environ.get("MAX_EQUITY_DRAWDOWN_PCT", 10.0))
-    SL_TICKS: int = 3
+    SL_TICKS: int = int(os.environ.get("SL_TICKS", 3))
     TP_SD_BAND: int = 1
     # Bracket exit limit price = trigger ± this many ticks, so the stop-limit
     # fills like a market on a fast move instead of being left behind.
@@ -79,6 +88,32 @@ class Config:
     COOLDOWN_SEC: float = float(os.environ.get("COOLDOWN_SEC", 120.0))
     PAPER_COOLDOWN_SEC: float = float(os.environ.get("PAPER_COOLDOWN_SEC", 120.0))
     PAPER_EQUITY: float = float(os.environ.get("PAPER_EQUITY", 10000.0))
+
+    # Populated by _load_symbol_configs() at module load time
+    _symbol_configs: dict = {}
+
+    def _load_symbol_configs(self) -> None:
+        cfg_dir = Path(__file__).parent / "config"
+        for delta_sym in self.SYMBOL_MAP.values():
+            f = cfg_dir / f"{delta_sym}.json"
+            if not f.exists():
+                continue
+            try:
+                data = json.loads(f.read_text())
+                self._symbol_configs[delta_sym] = {
+                    k: v for k, v in data.items() if k in _SYMBOL_CONFIG_KEYS and v is not None
+                }
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Failed to load %s: %s", f, exc)
+
+    def for_symbol(self, symbol: str, key: str):
+        """Return per-symbol override for key, falling back to global cfg attribute.
+        Explicit env vars always win so the optimizer can override per-symbol configs."""
+        if key in os.environ:
+            return getattr(self, key)
+        delta_sym = self.SYMBOL_MAP.get(symbol, symbol)
+        return self._symbol_configs.get(delta_sym, {}).get(key, getattr(self, key))
 
     @property
     def active_ws_url(self) -> str:
@@ -103,3 +138,4 @@ class Config:
 
 
 cfg = Config()
+cfg._load_symbol_configs()

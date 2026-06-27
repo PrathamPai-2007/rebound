@@ -39,8 +39,9 @@ class VWAPResult:
 class VWAPIndicator:
     """Volume-weighted average price with rolling SD bands."""
 
-    def __init__(self, window: int) -> None:
+    def __init__(self, window: int, band_sd: float = cfg.VWAP_BAND_SD) -> None:
         self.window = window
+        self._band_sd = band_sd
         self._ticks: deque[Tick] = deque(maxlen=window)
 
     def update(self, tick: Tick) -> VWAPResult | None:
@@ -59,7 +60,7 @@ class VWAPIndicator:
         variance = float(np.dot(volumes, (prices - vwap) ** 2) / total_vol)
         sd = float(np.sqrt(max(0.0, variance)))
 
-        mult = cfg.VWAP_BAND_SD
+        mult = self._band_sd
         return VWAPResult(
             vwap=vwap,
             upper1=vwap + sd,
@@ -113,6 +114,7 @@ class RSIIndicator:
 @dataclass
 class CandleBuffer:
     """Aggregates ticks into OHLCV candles for wick-rejection check."""
+    wick_ratio: float = cfg.WICK_RATIO
     _candles: deque[Candle] = field(default_factory=lambda: deque(maxlen=3))
     _open: float | None = None
     _high: float = -np.inf
@@ -172,7 +174,7 @@ class CandleBuffer:
         candle_range = c.high - c.low
         if candle_range == 0:
             return False
-        return (lower_wick >= cfg.WICK_RATIO * body) and (c.close > c.low + candle_range * 0.5)
+        return (lower_wick >= self.wick_ratio * body) and (c.close > c.low + candle_range * 0.5)
 
     def has_bearish_wick_rejection(self) -> bool:
         """Upper wick >= ratio x body, close in lower half of candle range."""
@@ -186,4 +188,4 @@ class CandleBuffer:
         candle_range = c.high - c.low
         if candle_range == 0:
             return False
-        return (upper_wick >= cfg.WICK_RATIO * body) and (c.close < c.low + candle_range * 0.5)
+        return (upper_wick >= self.wick_ratio * body) and (c.close < c.low + candle_range * 0.5)

@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 
 def _f(row: dict, key: str) -> float | None:
@@ -35,7 +36,7 @@ def stats_from_csv(path: str) -> dict:
             rows = list(csv.DictReader(fh))
     except FileNotFoundError:
         return {"n": 0}
-    rs = [_f(r, "pnl_r") for r in rows if _f(r, "pnl_r") is not None]
+    rs = [v for r in rows if (v := _f(r, "pnl_r")) is not None]
     n = len(rs)
     if n == 0:
         return {"n": 0}
@@ -48,12 +49,13 @@ def stats_from_csv(path: str) -> dict:
         cum += x
         peak = max(peak, cum)
         max_dd = max(max_dd, peak - cum)
+    total_r = sum(rs)
     return {
         "n": n,
         "wins": len(wins),
         "win_pct": len(wins) / n * 100,
-        "exp_r": sum(rs) / n,
-        "total_r": sum(rs),
+        "exp_r": total_r / n,
+        "total_r": total_r,
         "pf": (gross_win / gross_loss) if gross_loss > 0 else float("inf"),
         "max_dd": max_dd,
     }
@@ -115,21 +117,29 @@ def main() -> None:
               f"{'n':>4} {'win%':>5} {'exp_R':>7} {'total_R':>8} {'PF':>5} {'maxDD':>6}")
         print(f"  {'-' * 65}")
 
-        results: list[tuple[dict, dict]] = []
-        for (rsi_os, rsi_ob), band_sd, wick in combos:
+        def _job(combo):
+            (rsi_os, rsi_ob), band_sd, wick = combo
             params = {
                 "RSI_OVERSOLD":  rsi_os,
                 "RSI_OVERBOUGHT": rsi_ob,
                 "VWAP_BAND_SD":  band_sd,
                 "WICK_RATIO":    wick,
             }
-            s = run_one(symbol, params, args.resolution, args.data_dir)
-            results.append((params, s))
+            return params, run_one(symbol, params, args.resolution, args.data_dir)
 
+        workers = min(len(combos), os.cpu_count() or 4)
+        print(f"  Running {len(combos)} combos with {workers} parallel workers...")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results: list[tuple[dict, dict]] = list(pool.map(_job, combos))
+
+        for params, s in results:
+            rsi_os  = params["RSI_OVERSOLD"]
+            rsi_ob  = params["RSI_OVERBOUGHT"]
+            band_sd = params["VWAP_BAND_SD"]
+            wick    = params["WICK_RATIO"]
             if s["n"] == 0:
                 print(f"  {rsi_os:>4} {rsi_ob:>4} {band_sd:>5.2f} {wick:>5.1f} | (no trades)")
                 continue
-
             pf_str = f"{s['pf']:5.2f}" if s["pf"] != float("inf") else "  inf"
             print(f"  {rsi_os:>4} {rsi_ob:>4} {band_sd:>5.2f} {wick:>5.1f} | "
                   f"{s['n']:>4} {s['win_pct']:>4.1f}% {s['exp_r']:>+7.3f} "

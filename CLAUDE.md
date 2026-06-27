@@ -24,10 +24,10 @@ LOG_LEVEL=DEBUG python bot.py
 
 ## Architecture
 
-Two persistent WebSocket connections to `wss://socket.india.delta.exchange`, plus one `aiohttp` REST session. Bot runs **4 async tasks** in `bot.py`:
+Two persistent WebSocket connections to `wss://socket.india.delta.exchange`, plus one `aiohttp` REST session. Bot runs **3 async tasks** in dry-run mode, **4 in live** (`bot.py`):
 
 - **`_stream_public`** — single task reading the public `ob_l2` channel. All 5 symbols are multiplexed on one connection; messages are fanned out by `product_symbol` to the correct `SymbolEngine`.
-- **`_stream_private`** — single task reading the private channel (after `key-auth`). Routes by `msg["type"]`: `positions` → `RiskManager.on_position_update`, `margins` → `on_balance_update`, `orders` → `on_order_update`. Each handler dispatch is wrapped in try/except so a parse bug logs instead of killing the stream.
+- **`_stream_private`** — *(live only, skipped in DRY_RUN)* single task reading the private channel (after `key-auth`). Routes by `msg["type"]`: `positions` → `RiskManager.on_position_update`, `margins` → `on_balance_update`, `orders` → `on_order_update`. Each handler dispatch is wrapped in try/except so a parse bug logs instead of killing the stream.
 - **`heartbeat_watchdog`** — per-stream liveness. `DeltaWSClient` tracks `_last_public`/`_last_private` (monotonic); if a stream goes silent > `WS_HEARTBEAT_INTERVAL * 2` it force-closes that connection so its listen loop reconnects. Catches exchange-side data stalls that the `websockets` ping/pong (live-TCP only) misses.
 - **`_summary_loop`** — every `SUMMARY_INTERVAL` logs one INFO line: per-symbol gate pass counts (delta), signals, paper W/L + win-rate, live W/L, equity.
 
@@ -63,7 +63,7 @@ The three entry gates are evaluated as named booleans in `SymbolEngine.on_tick`;
 ## Order sizing & equity
 
 `RiskManager._calc_size()` returns **integer contracts**, not coin/USD:
-`coin_qty = (equity * RISK_PER_TRADE_PCT/100) / |entry - sl|`, then `size = max(1, round(coin_qty / contract_value))`. Rejects (returns 0) if required margin (`entry * size * contract_value / leverage`) exceeds equity. `contract_value` is loaded per symbol at startup from `/v2/products` (BTC 0.001, SOL 1.0, ETH 0.01, XAUT 0.001, BNB 0.1).
+`coin_qty = (equity * RISK_PER_TRADE_PCT/100) / |entry - sl|`, then `size = max(1, round(coin_qty / contract_value))`. Rejects (returns 0) if required margin (`entry * size * contract_value / leverage`) exceeds equity. `contract_value` is loaded per symbol at startup from `/v2/products` (BTC 0.001, SOL 1.0, XAUT 0.001, BNB 0.1, LTC 1.0).
 
 Equity = wallet `balance` + `unrealised_pnl`. The `margins` stream is authoritative for upnl; positions-stream sum is only a fallback when margins doesn't carry it. `_initial_equity` is latched once on the first positive equity reading and drives the drawdown guard.
 
@@ -81,29 +81,42 @@ Delta Exchange India uses `USD` suffix (not `USDT`). Internal symbols map to Del
 |---|---|
 | `BTC/USDT` | `BTCUSD` |
 | `SOL/USDT` | `SOLUSD` |
-| `ETH/USDT` | `ETHUSD` |
 | `XAUT/USDT` | `XAUTUSD` (Tether Gold — only gold perp available) |
 | `BNB/USDT` | `BNBUSD` |
+| `LTC/USDT` | `LTCUSD` |
 
-XAG (silver) and CL (crude oil) do not exist as perpetuals on Delta India.
+ETH, DOGE, and XRP were evaluated and dropped: ETH had negative expectancy (−0.052R/trade over 130 trades), DOGE and XRP had sub-0.03R/trade edge that evaporates with any spread.
+
+## Per-symbol config files
+
+Each active symbol has a JSON file in `config/{DELTASYM}.json` (e.g. `config/BNBUSD.json`) that overrides the 8 tunable strategy params for that symbol. Loaded at startup by `cfg._load_symbol_configs()` into `cfg._symbol_configs`.
+
+**Priority**: explicit env var > JSON file > global `cfg.*` default. This means the optimizer (which sets env vars per subprocess) always wins over JSON, so optimizer sweeps work correctly.
+
+Use `cfg.for_symbol(internal_symbol, key)` anywhere you need a per-symbol param — `SymbolEngine`, `RiskManager._calc_size()`, etc. already use it.
+
+Tunable keys: `RSI_PERIOD`, `RSI_OVERSOLD`, `RSI_OVERBOUGHT`, `VWAP_WINDOW`, `VWAP_BAND_SD`, `WICK_RATIO`, `SL_TICKS`, `RISK_PER_TRADE_PCT`.
 
 ## Strategy parameters
 
-All in `config.py` as `cfg.*`, sourced from env vars:
+Global defaults in `config.py` as `cfg.*`, sourced from env vars. Per-symbol JSON files override these — see above.
 
 | `cfg` field | Env var | Default | What it controls |
 |---|---|---|---|
 | `VWAP_WINDOW` | `VWAP_WINDOW` | 150 ticks | Rolling window for VWAP + SD bands |
 | `VWAP_BAND_SD` | `VWAP_BAND_SD` | 1.75 | SD multiplier for upper2/lower2 entry bands |
 | `RSI_PERIOD` | `RSI_PERIOD` | 7 | RSI lookback (Wilder smoothing) |
-| `RSI_OVERSOLD` / `RSI_OVERBOUGHT` | `RSI_OVERSOLD` / `RSI_OVERBOUGHT` | 30 / 70 | Signal thresholds |
+| `RSI_OVERSOLD` / `RSI_OVERBOUGHT` | `RSI_OVERSOLD` / `RSI_OVERBOUGHT` | 35 / 65 | Signal thresholds |
+| `CANDLE_TIMEFRAME` | `CANDLE_TIMEFRAME` | `1m` | Candle bucket size for `CandleBuffer` |
 | `WICK_RATIO` | `WICK_RATIO` | 1.5 | Min wick-to-body ratio for wick-rejection gate |
-| `SL_TICKS` | — | 3 | Ticks past candle wick for stop-loss |
+| `SL_TICKS` | `SL_TICKS` | 3 | Ticks past candle wick for stop-loss |
 | `RISK_PER_TRADE_PCT` | `RISK_PER_TRADE_PCT` | 1.0 | Fraction of equity risked per trade (drives sizing) |
 | `BRACKET_SLIPPAGE_TICKS` | `BRACKET_SLIPPAGE_TICKS` | 5 | Stop-limit exit limit price offset past trigger, so SL fills like a market on a fast move |
 | `MAX_EQUITY_DRAWDOWN_PCT` | `MAX_EQUITY_DRAWDOWN_PCT` | 10.0 | Triggers emergency market-close of all positions |
 | `PAPER_EQUITY` | `PAPER_EQUITY` | 10000.0 | Simulated equity used for sizing in DRY_RUN mode |
 | `SUMMARY_INTERVAL` | `SUMMARY_INTERVAL_SEC` | 300s | How often the summary log line fires |
+| `LEVERAGE` (crypto) | `CRYPTO_LEVERAGE` | 50 | Leverage for BTC/SOL/BNB/LTC |
+| `LEVERAGE` (commodity) | `COMMODITY_LEVERAGE` | 30 | Leverage for XAUT |
 
 ## Cooldown mechanism
 
@@ -111,9 +124,10 @@ After any position closes (detected by `size == 0` in the `positions` WS message
 
 ## Adding a new symbol
 
-1. Add to `cfg.SYMBOLS` and `cfg.LEVERAGE` in `config.py`.
-2. Add the Delta symbol mapping to `cfg.SYMBOL_MAP` — use the `USD`-suffix symbol from `/v2/products` (contract_type=`perpetual_futures`).
-3. No other changes needed.
+1. Add to `cfg.SYMBOLS`, `cfg.LEVERAGE`, `cfg.SYMBOL_MAP`, and `cfg._reverse_symbol_map` in `config.py`.
+2. Use the `USD`-suffix symbol from `/v2/products` (contract_type=`perpetual_futures`).
+3. Create `config/{DELTASYM}.json` with tuned params (copy any existing file as a template; defaults are fine to start).
+4. Run `python fetch.py --symbols {DELTASYM}` then `python optimize.py --symbols {DELTASYM} --min-trades 50` to find best params, then update the JSON.
 
 ## REST API notes
 
@@ -129,9 +143,9 @@ Columns written by `core/trade_tracker.py` (defined in `CSV_FIELDS`):
 
 `mode, symbol, side, opened_at, closed_at, duration_s, entry, sl, tp, exit, outcome, risk, pnl_r, reward_risk, mfe_r, mae_r, rsi_at_entry, vwap_at_entry, gate_band, gate_rsi, gate_wick`
 
-- `mode`: `paper` or `live`
+- `mode`: `paper`, `live`, or `backtest`
 - `pnl_r`: R-multiple (1R = |entry − sl|). Hit SL → −1.0, hit TP → +reward_risk
-- `mfe_r` / `mae_r`: max favorable / adverse excursion in R (paper only; blank for live)
+- `mfe_r` / `mae_r`: max favorable / adverse excursion in R (paper/backtest only; blank for live)
 - `gate_*`: 0/1 booleans for which gates triggered the signal
 
 ## Historical data fetcher
@@ -139,36 +153,40 @@ Columns written by `core/trade_tracker.py` (defined in `CSV_FIELDS`):
 `fetch.py` pulls OHLCV candles from `GET /v2/history/candles` (public, no auth) and stores them as Parquet files in `data/{symbol}_{resolution}.parquet`. Re-runs append and deduplicate by timestamp — safe to run incrementally.
 
 ```bash
-# All 5 symbols, 1m, last 30 days (default)
+# All active symbols, 1m, last 30 days (default)
 python fetch.py
 
 # Subset, custom range
-python fetch.py --symbols BTCUSD,ETHUSD --resolution 5m --start 2026-01-01 --end 2026-06-01
+python fetch.py --symbols BTCUSD,LTCUSD --resolution 1m --start 2025-12-27
 ```
 
 Parquet schema: `time` (int64 unix s), `open/high/low/close/volume` (float64). Uses pure `pyarrow` — no pandas. Fetches in 7-day chunks to avoid API result-count limits.
 
 ## Backtester
 
-`backtest.py` replays parquet candles through the live `SymbolEngine` (same indicators, gates, SL/TP logic) and writes outcomes to `trades.csv` with `mode=backtest`.
+`backtest.py` replays parquet candles through the live `SymbolEngine` (same indicators, gates, SL/TP logic) and writes outcomes to a CSV with `mode=backtest`.
 
 ```bash
-# Fetch data first, then backtest
-python fetch.py --symbols BTCUSD --resolution 1m --start 2026-05-01
-python backtest.py --symbols BTCUSD --resolution 1m
-python analyse.py --mode backtest
+# Fetch data first, then backtest all active symbols
+python fetch.py --start 2025-12-27
+python backtest.py --out trades_6m.csv
+python analyse.py --file trades_6m.csv --mode backtest
 ```
 
-Key design: each OHLCV candle is synthesized into 4 `Tick` objects (open→high→low→close, all within the same 60s bucket) so `CandleBuffer` reconstructs identical OHLCV including wick geometry. The signal fires on the first tick of the *next* candle (natural bucket boundary), matching live behavior. SL/TP resolution checks each subsequent candle's `high`/`low` range. Cooldown uses simulated candle timestamps (`COOLDOWN_SEC` from config), not wall clock. `analyse.py --mode backtest` filters backtest rows.
+Key design: each OHLCV candle is synthesized into 4 `Tick` objects (open→high→low→close, all within the same 60s bucket) so `CandleBuffer` reconstructs identical OHLCV including wick geometry. The signal fires on the first tick of the *next* candle (natural bucket boundary), matching live behavior. SL/TP resolution checks each subsequent candle's `high`/`low` range. Cooldown uses simulated candle timestamps (`COOLDOWN_SEC` from config), not wall clock.
 
 ## Parameter sweep (Optimizer)
 
-`optimize.py` (previously `experiment.py`) performs a grid search sweep across parameter combinations to find settings with the highest expectancy.
+`optimize.py` runs a grid search over RSI thresholds, VWAP band width, and wick ratio to find parameter combinations with the highest expectancy for a given symbol. Combos run in parallel via `ThreadPoolExecutor` (uses all CPU cores); results table prints when the full symbol sweep completes.
 
 ```bash
-python optimize.py --symbols BTCUSD --resolution 1m
+python optimize.py                               # BTCUSD + XAUTUSD, 1m, data/
+python optimize.py --symbols LTCUSD
+python optimize.py --symbols BTCUSD,LTCUSD --resolution 5m
+python optimize.py --min-trades 50              # raise minimum trade count filter (default 15)
 ```
-It runs `backtest.py` in a loop via `subprocess.run` and parses the output statistics, printing a sorted list of the top 5 parameter configurations.
+
+Grid searched: RSI pairs `[(25,75),(30,70),(35,65),(40,60)]` × VWAP band SDs `[1.25,1.50,1.75,2.00,2.25]` × wick ratios `[1.0,1.5,2.0]` = **60 combos per symbol**. Each combo spawns `backtest.py` as a subprocess with env-var overrides, reads the output CSV via `stats_from_csv()`. After choosing best params, update the symbol's `config/{DELTASYM}.json`.
 
 ## Smoke test
 
